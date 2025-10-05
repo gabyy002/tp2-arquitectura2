@@ -1,0 +1,133 @@
+#include <Wire.h>
+#include <Adafruit_Sensor.h>
+#include <Adafruit_BMP280.h>
+#include <DHT.h>
+#include <ESP8266WiFi.h>
+#include <ThingSpeak.h>
+
+// ======== SENSORES ========
+#define SDA_PIN D1
+#define SCL_PIN D2
+Adafruit_BMP280 bmp;
+
+#define DHTPIN D4
+#define DHTTYPE DHT22
+DHT dht(DHTPIN, DHTTYPE);
+
+// ======== WIFI ========
+const char* ssid = "Gaby";
+const char* password = "del1al99";
+
+WiFiServer server(80);
+
+// ThingSpeak
+unsigned long channelID = 3092764;
+const char* writeAPIKey = "P42Z5T34HD52GUXD";
+
+unsigned long lastSendTime = 0;
+const unsigned long sendInterval = 20000; // 20 segundos
+
+WiFiClient webClient;
+
+void setup() {
+  Serial.begin(115200);
+  Wire.begin(SDA_PIN, SCL_PIN);
+
+  // BMP280
+  if (!bmp.begin(0x76)) {
+    if (!bmp.begin(0x77)) {
+      Serial.println("⚠️ No se encontró el BMP280!");
+      while(1);
+    }
+  }
+
+  // DHT22
+  dht.begin();
+
+  // WiFi
+  WiFi.begin(ssid, password);
+  Serial.print("Conectando a WiFi...");
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("\nConectado!");
+  Serial.print("IP: ");
+  Serial.println(WiFi.localIP());
+
+  ThingSpeak.begin(webClient);
+  server.begin();
+}
+
+void loop() {
+  // === ENVÍO AUTOMÁTICO A THINGSPEAK ===
+  if (millis() - lastSendTime >= sendInterval) {
+    lastSendTime = millis();
+
+    float bmpTemp  = bmp.readTemperature();
+    float bmpPress = bmp.readPressure() / 100.0F;
+    float dhtTemp  = dht.readTemperature();
+    float dhtHum   = dht.readHumidity();
+
+    ThingSpeak.setField(1, bmpTemp);
+    ThingSpeak.setField(2, bmpPress);
+    ThingSpeak.setField(3, dhtTemp);
+    ThingSpeak.setField(4, dhtHum);
+
+    int status = ThingSpeak.writeFields(channelID, writeAPIKey);
+    if (status == 200) {
+      Serial.println("✅ Datos enviados a ThingSpeak");
+    } else {
+      Serial.println("❌ Error al enviar: " + String(status));
+    }
+  }
+
+  // === SERVIDOR WEB ===
+  WiFiClient client = server.available();
+  if (client) {
+    Serial.println("Cliente conectado");
+
+    while (client.connected()) {
+      if (client.available()) {
+        String request = client.readStringUntil('\r');
+        Serial.println(request);
+        break;
+      }
+    }
+
+    float bmpTemp  = bmp.readTemperature();
+    float bmpPress = bmp.readPressure() / 100.0F;
+    float dhtTemp  = dht.readTemperature();
+    float dhtHum   = dht.readHumidity();
+
+    String html = "<!DOCTYPE html><html><head><meta charset='UTF-8'><title>Estación Meteorológica</title><script>setTimeout(function(){location.reload();},20000);</script>";
+    html += "<style>";
+    html += "body { font-family: 'Segoe UI', sans-serif; background: #f0f4f8; color: #333; text-align: center; padding: 20px; }";
+    html += "h1 { color: #0077b6; margin-bottom: 30px; }";
+    html += ".card { background: #ffffff; border-radius: 10px; box-shadow: 0 4px 8px rgba(0,0,0,0.1); padding: 20px; margin: 20px auto; max-width: 300px; }";
+    html += ".card h2 { margin-bottom: 15px; color: #023e8a; }";
+    html += ".data { font-size: 18px; margin: 8px 0; }";
+    html += ".footer { font-size: 14px; color: #555; margin-top: 40px; font-style: italic; }";
+    html += "</style>";
+    html += "</head><body>";
+    html += "<h1>🌤️ Estación Meteorológica</h1>";
+    html += "<div class='card'><h2>Sensor BMP280</h2>";
+    html += "<div class='data'>🌡️ Temperatura: " + String(bmpTemp) + " °C</div>";
+    html += "<div class='data'>📊 Presión: " + String(bmpPress) + " hPa</div></div>";
+    html += "<div class='card'><h2>Sensor DHT22</h2>";
+    html += "<div class='data'>🌡️ Temperatura: " + String(dhtTemp) + " °C</div>";
+    html += "<div class='data'>💧 Humedad: " + String(dhtHum) + " %</div></div>";
+    html += "<div class='footer'>Actualizado al recargar la página</div>";
+    html += "</body></html>";
+
+    client.println("HTTP/1.1 200 OK");
+    client.println("Content-Type: text/html; charset=UTF-8");
+    client.println("Connection: close");
+    client.println("Cache-Control: no-cache");
+    client.println();
+    client.println(html);
+    delay(1);
+    client.stop();
+    Serial.println("Cliente desconectado");
+  }
+}
